@@ -10,7 +10,7 @@ open Complex BigOperators
 /-- The source Euclidean norm, explicitly distinct from the supremum norm on Pi. -/
 def stateNorm {ι : Type*} [Fintype ι] (u : ι → ℂ) : ℝ := Real.sqrt (2 * energy u)
 
-/-- Observed components are replaced by the master: their differences become zero. -/
+/-- Observed components are replaced by the drive system: their differences become zero. -/
 def transverseProjection {ι : Type*} [DecidableEq ι] (observed : Finset ι)
     (u : ι → ℂ) : ι → ℂ := fun i => if i ∈ observed then 0 else u i
 

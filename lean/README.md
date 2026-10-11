@@ -29,8 +29,7 @@ lake build
   `wavenumber k₀ q n = k₀ q^(n+1)`. A chain of `N + 2` shells has `N`
   interacting triads.
 - **Module paths.** The paths keep the original project's `Research.STPR`
-  prefix, so each file is byte-identical to its reviewed version.
-  `Research.lean` imports all ten.
+  prefix. `Research.lean` imports all ten.
 
 ## Files
 
@@ -114,11 +113,9 @@ Listed in dependency order.
 - So the solver's time step does not conserve energy exactly, even though the
   equations do.
 
-## Not included yet
+## Not covered
 
 - rounding-error bounds;
 - existence and uniqueness of solutions;
 - RK4 error bounds against the exact solution;
-- master/slave synchronization and tangent maps.
-
-Proofs of the last three exist in the research project and may be added later.
+- drive/response synchronization and tangent maps.
