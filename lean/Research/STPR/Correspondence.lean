@@ -57,7 +57,9 @@ theorem finiteNonlinear_eq_local {N : ℕ} (b c : ℝ) (k : Fin N → ℝ)
   rw [shifted_delta_sum, shifted_delta_sum, shifted_delta_sum]
   simp
 
-/-- The branches are precisely the Cython source's physical-boundary tests. -/
+/-- The branches are precisely the historical Cython source's physical-boundary tests.
+The current C++ `sabra::rhs` uses zero ghost padding for these boundaries instead;
+`finiteNonlinear_eq_ghost` relates the two exact-arithmetic formulas. -/
 theorem branch_conditions {N : ℕ} (i : Fin (N + 2)) :
     (i.val < N ↔ i.val + 2 < N + 2) ∧
     (1 ≤ i.val ∧ i.val - 1 < N ↔ 0 < i.val ∧ i.val + 1 < N + 2) ∧

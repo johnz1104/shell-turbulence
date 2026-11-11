@@ -1,4 +1,5 @@
 import Research.STPR.GhostEquation
+import Research.STPR.Growth
 
 noncomputable section
 namespace Research.STPR

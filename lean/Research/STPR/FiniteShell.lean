@@ -180,7 +180,8 @@ theorem shell_rk4_equivariance (left middle right : τ → ι)
   intro x
   exact (fullRHS_equivariance left middle right b c k rate p f x hp hrec).symm
 
-/-- The two ghost shells on each side leave N represented triads in N+2 shells. -/
+/-- A chain of N+2 physical shells contains N consecutive triads.
+Ghost shells lie outside these represented coordinates. -/
 def leftShell {N : ℕ} (t : Fin N) : Fin (N + 2) := Fin.castAdd 2 t
 def middleShell {N : ℕ} (t : Fin N) : Fin (N + 2) := t.succ.castSucc
 def rightShell {N : ℕ} (t : Fin N) : Fin (N + 2) := t.succ.succ

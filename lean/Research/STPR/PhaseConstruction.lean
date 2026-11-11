@@ -1,5 +1,5 @@
-import Research.STPR.Growth
 import Research.STPR.Correspondence
+import Mathlib.Analysis.Real.Sqrt
 
 noncomputable section
 namespace Research.STPR

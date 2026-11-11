@@ -4,7 +4,9 @@ noncomputable section
 namespace Research.STPR
 open Complex
 
-/-- This is the exact real-arithmetic array formula implemented in sabra.py:171-174. -/
+/-- Exact real-arithmetic nonlinear formula corresponding to `sabra::rhs` in
+`solver/include/sabra/sabra.hpp`. Historical reference: `sabra.py:171-174`.
+This definition does not model floating-point rounding; see `lean/README.md`. -/
 def ghostNonlinear {N : ℕ} (k₀ q b c : ℝ) (u : Fin (N + 2) → ℂ) (i : Fin (N + 2)) : ℂ :=
   triadFirst (wavenumber k₀ q i.val) (ghost u ((i.val : ℤ) + 1)) (ghost u ((i.val : ℤ) + 2)) +
   triadMiddle b (wavenumber k₀ q i.val / q) (ghost u ((i.val : ℤ) - 1))

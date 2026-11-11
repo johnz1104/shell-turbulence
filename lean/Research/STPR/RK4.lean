@@ -6,7 +6,9 @@ noncomputable section
 namespace Research.STPR
 open Complex
 
-/-- The complete classical explicit RK4 map from integration.py:20-27. -/
+/-- Classical explicit RK4 map corresponding to `sabra::rk4_step` in
+`solver/include/sabra/sabra.hpp`. Historical reference: `integration.py:20-27`.
+The map uses exact real arithmetic; see `lean/README.md` for its scope. -/
 def rk4 {V : Type*} [AddCommGroup V] [Module ℝ V]
     (F : V → V) (h : ℝ) (u : V) : V :=
   let k₁ := F u
