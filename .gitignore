@@ -1,3 +1,6 @@
 build/
 lean/.lake/
 .DS_Store
+/research/
+/.vscode/
+__pycache__/
