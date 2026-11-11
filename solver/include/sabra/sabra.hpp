@@ -410,6 +410,70 @@ struct EnsembleOutput {
   long long* failure_step = nullptr;  // (members,), -1 when completed
 };
 
+namespace detail {
+
+// Non-owning slices of the ensemble buffers for one member.
+struct MemberOutput {
+  MemberOutput(const EnsembleOutput& out, long long member, long long samples,
+               int shells, int record_shells)
+      : energy(out.energy + member * samples),
+        dissipation(out.dissipation + member * samples),
+        power(out.power_input + member * samples),
+        shell_energy(out.shell_energy + member * samples * shells),
+        recorded(out.recorded ? out.recorded + 2 * member * samples * record_shells
+                              : nullptr),
+        final_state(out.final_states + 2 * member * shells),
+        status(out.status[member]), failure_step(out.failure_step[member]) {}
+
+  double* energy;
+  double* dissipation;
+  double* power;
+  double* shell_energy;
+  double* recorded;
+  double* final_state;
+  int& status;
+  long long& failure_step;
+};
+
+inline void fill_failed_output(const MemberOutput& out, long long first_sample,
+                               long long sample_count, int shells,
+                               int record_shells) {
+  const double nan = std::nan("");
+  for (long long sample = first_sample; sample < sample_count; ++sample) {
+    out.energy[sample] = nan;
+    out.dissipation[sample] = nan;
+    out.power[sample] = nan;
+    std::fill(out.shell_energy + sample * shells,
+              out.shell_energy + (sample + 1) * shells, nan);
+    if (out.recorded) {
+      std::fill(out.recorded + 2 * sample * record_shells,
+                out.recorded + 2 * (sample + 1) * record_shells, nan);
+    }
+  }
+  std::fill(out.final_state, out.final_state + 2 * shells, nan);
+}
+
+// Join already-started workers even if starting a later thread throws.
+class ThreadJoiner {
+ public:
+  explicit ThreadJoiner(std::vector<std::thread>& threads) : threads_(threads) {}
+  ThreadJoiner(const ThreadJoiner&) = delete;
+  ThreadJoiner& operator=(const ThreadJoiner&) = delete;
+
+  ~ThreadJoiner() {
+    for (auto& thread : threads_) {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+  }
+
+ private:
+  std::vector<std::thread>& threads_;
+};
+
+}  // namespace detail
+
 // Advance every member from base + perturbation[m]. Each member is integrated
 // serially by exactly one thread, so results do not depend on thread count.
 // A member whose state becomes non-finite is marked and its remaining samples
@@ -443,7 +507,6 @@ inline void run_ensemble(const Model& model, const double* base,
 
   const long long sample_count = total_steps / sample_stride + 1;
   const StepSizes h(dt);
-  const double nan = std::nan("");
 
   auto run_member = [&](long long m, Workspace& w) {
     const double* eta = perturbations + 2 * shells * m;
@@ -451,37 +514,20 @@ inline void run_ensemble(const Model& model, const double* base,
       w.ur[j + kGhost] = base[2 * j] + eta[2 * j];
       w.ui[j + kGhost] = base[2 * j + 1] + eta[2 * j + 1];
     }
-    double* energy = out.energy + m * sample_count;
-    double* dissipation = out.dissipation + m * sample_count;
-    double* power = out.power_input + m * sample_count;
-    double* shell_energy = out.shell_energy + m * sample_count * shells;
-    double* recorded = out.recorded ? out.recorded + 2 * m * sample_count * record_shells
-                                    : nullptr;
-    double* final_state = out.final_states + 2 * m * shells;
-    out.status[m] = member_completed;
-    out.failure_step[m] = -1;
+    const detail::MemberOutput member(out, m, sample_count, shells, record_shells);
+    member.status = member_completed;
+    member.failure_step = -1;
     dispatch(model, [&](auto count) {
       for (long long sample = 0; sample < sample_count; ++sample) {
-        if (!record(model, count, w, shell_energy + sample * shells,
-                    energy[sample], dissipation[sample], power[sample])) {
-          out.status[m] = member_nonfinite;
-          out.failure_step[m] = sample * sample_stride;
-          for (long long rest = sample; rest < sample_count; ++rest) {
-            energy[rest] = nan;
-            dissipation[rest] = nan;
-            power[rest] = nan;
-            std::fill(shell_energy + rest * shells,
-                      shell_energy + (rest + 1) * shells, nan);
-            if (recorded) {
-              std::fill(recorded + 2 * rest * record_shells,
-                        recorded + 2 * (rest + 1) * record_shells, nan);
-            }
-          }
-          std::fill(final_state, final_state + 2 * shells, nan);
+        if (!record(model, count, w, member.shell_energy + sample * shells,
+                    member.energy[sample], member.dissipation[sample], member.power[sample])) {
+          member.status = member_nonfinite;
+          member.failure_step = sample * sample_stride;
+          detail::fill_failed_output(member, sample, sample_count, shells, record_shells);
           return;
         }
-        if (recorded) {
-          double* row = recorded + 2 * sample * record_shells;
+        if (member.recorded) {
+          double* row = member.recorded + 2 * sample * record_shells;
           for (int j = 0; j < record_shells; ++j) {
             row[2 * j] = w.ur[j + kGhost];
             row[2 * j + 1] = w.ui[j + kGhost];
@@ -492,7 +538,7 @@ inline void run_ensemble(const Model& model, const double* base,
         }
         advance(model, count, h, sample_stride, w);
       }
-      w.store(final_state, shells);
+      w.store(member.final_state, shells);
     });
   };
 
@@ -522,14 +568,20 @@ inline void run_ensemble(const Model& model, const double* base,
       }
     }
   };
-  std::vector<std::thread> pool;
-  pool.reserve(static_cast<std::size_t>(workers - 1));
-  for (long long t = 1; t < workers; ++t) {
-    pool.emplace_back(work);
-  }
-  work();
-  for (auto& thread : pool) {
-    thread.join();
+  {
+    std::vector<std::thread> pool;
+    detail::ThreadJoiner join_workers(pool);
+    pool.reserve(static_cast<std::size_t>(workers - 1));
+    try {
+      for (long long t = 1; t < workers; ++t) {
+        pool.emplace_back(work);
+      }
+    } catch (...) {
+      // Stop assigning members before the guard waits for running workers.
+      failed.store(true);
+      throw;
+    }
+    work();
   }
   if (failure) {
     std::rethrow_exception(failure);

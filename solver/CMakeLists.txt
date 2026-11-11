@@ -26,6 +26,10 @@ target_include_directories(sabra_tests PRIVATE include)
 target_compile_options(sabra_tests PRIVATE ${SABRA_FLAGS})
 target_link_libraries(sabra_tests PRIVATE Threads::Threads)
 
+add_executable(sabra_capi_tests tests/test_sabra_capi.cpp)
+target_compile_options(sabra_capi_tests PRIVATE ${SABRA_FLAGS})
+target_link_libraries(sabra_capi_tests PRIVATE sabra)
+
 add_executable(sabra_bench bench/bench_sabra.cpp)
 target_include_directories(sabra_bench PRIVATE include)
 target_compile_options(sabra_bench PRIVATE ${SABRA_FLAGS})
@@ -33,3 +37,4 @@ target_link_libraries(sabra_bench PRIVATE Threads::Threads)
 
 enable_testing()
 add_test(NAME sabra_tests COMMAND sabra_tests)
+add_test(NAME sabra_capi_tests COMMAND sabra_capi_tests)

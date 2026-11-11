@@ -1,11 +1,14 @@
 // Native checks for the fused Sabra core.
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <thread>
 #include <vector>
 
 #include "sabra/sabra.hpp"
@@ -21,6 +24,14 @@ void check(bool condition, const char* what) {
   } else {
     std::printf("ok:   %s\n", what);
   }
+}
+
+bool all_finite(const double* first, const double* last) {
+  return std::all_of(first, last, [](double value) { return std::isfinite(value); });
+}
+
+bool all_finite(const std::vector<double>& values) {
+  return all_finite(values.data(), values.data() + values.size());
 }
 
 struct Setup {
@@ -86,15 +97,17 @@ void test_rhs_against_reference() {
     std::vector<double> result(2 * shells);
     sabra::evaluate_rhs(model, state.data(), result.data());
     const auto expected = reference_rhs(s, state);
+    bool finite = all_finite(result);
     double worst = 0.0;
     for (int j = 0; j < shells; ++j) {
+      finite = finite && std::isfinite(expected[j].real()) && std::isfinite(expected[j].imag());
       const double scale = 1e-300 + std::abs(expected[j]);
       worst = std::max(worst, std::abs(std::complex<double>(result[2 * j], result[2 * j + 1]) -
                                        expected[j]) / std::max(scale, 1.0));
     }
     char label[96];
     std::snprintf(label, sizeof label, "RHS matches branchy reference at N=%d (%.2e)", shells, worst);
-    check(worst < 1e-14, label);
+    check(finite && worst < 1e-14, label);
   }
 }
 
@@ -113,7 +126,7 @@ void test_nonlinear_energy_cancellation() {
     char label[96];
     std::snprintf(label, sizeof label, "Re<u,N(u)> = 0 to round-off at N=%d (%.2e)", shells,
                   std::abs(rate) / scale);
-    check(std::abs(rate) <= 1e-14 * scale, label);
+    check(std::isfinite(rate) && std::isfinite(scale) && std::abs(rate) <= 1e-14 * scale, label);
   }
 }
 
@@ -152,9 +165,16 @@ void test_fixed_and_generic_kernels_bitwise() {
   for (int shells : {3, 14, 22, 40, 45}) {
     const Setup s = make_setup(shells, 1.0e-4, 0.005, 0.005);
     const std::vector<double> initial = random_state(shells, 99u, 0.2);
-    const auto fixed = integrate(model_of(s), initial, 1.0e-5, 3000);
-    const auto generic = integrate(model_of(s, sabra::Kernel::generic), initial, 1.0e-5, 3000);
+    // Resolve the fastest viscous decay, including at the largest shell counts.
+    const double max_viscous_rate = *std::max_element(s.nu.begin(), s.nu.end());
+    const double dt = std::min(1.0e-5, 0.1 / max_viscous_rate);
+    const auto fixed = integrate(model_of(s), initial, dt, 3000);
+    const auto generic = integrate(model_of(s, sabra::Kernel::generic), initial, dt, 3000);
     char label[96];
+    std::snprintf(label, sizeof label, "fixed-N and generic trajectories remain finite at N=%d", shells);
+    const bool finite = all_finite(fixed) && all_finite(generic);
+    check(finite, label);
+    if (!finite) continue;
     std::snprintf(label, sizeof label, "fixed-N and generic kernels bitwise equal at N=%d", shells);
     check(std::memcmp(fixed.data(), generic.data(), fixed.size() * sizeof(double)) == 0, label);
   }
@@ -214,19 +234,82 @@ void test_ensemble() {
   sabra::run_ensemble(model, base.data(), perturbations.data(), members, 1e-5, steps, stride,
                       record, 3, many.view());
   check(one.same(many), "ensemble output bitwise independent of thread count");
-  check(one.status[4] == sabra::member_nonfinite && one.failure[4] >= 0,
-        "overflowing member is marked non-finite");
+  check(one.status[4] == sabra::member_nonfinite && one.failure[4] == stride,
+        "overflowing member is marked at the first non-finite sample");
+  const auto all_nan = [](const double* first, const double* last) {
+    return std::all_of(first, last, [](double value) { return std::isnan(value); });
+  };
+  const long long failed_member = 4;
+  const long long first_failed_sample = one.failure[failed_member] / stride;
+  bool failed_outputs = first_failed_sample >= 0 && first_failed_sample < samples;
+  if (failed_outputs) {
+    const long long begin = failed_member * samples + first_failed_sample;
+    const long long end = (failed_member + 1) * samples;
+    failed_outputs =
+        all_nan(one.energy.data() + begin, one.energy.data() + end) &&
+        all_nan(one.dissipation.data() + begin, one.dissipation.data() + end) &&
+        all_nan(one.power.data() + begin, one.power.data() + end) &&
+        all_nan(one.shell_energy.data() + begin * shells, one.shell_energy.data() + end * shells) &&
+        all_nan(one.recorded.data() + 2 * begin * record, one.recorded.data() + 2 * end * record) &&
+        all_nan(one.final_states.data() + 2 * failed_member * shells,
+                one.final_states.data() + 2 * (failed_member + 1) * shells);
+  }
+  check(failed_outputs, "failed member's remaining samples and final state are NaN");
   bool others = true;
   for (long long m = 0; m < members; ++m) {
-    if (m != 4) others = others && one.status[m] == sabra::member_completed && one.failure[m] == -1;
+    if (m == failed_member) continue;
+    const long long begin = m * samples, end = (m + 1) * samples;
+    others = others && one.status[m] == sabra::member_completed && one.failure[m] == -1 &&
+             all_finite(one.energy.data() + begin, one.energy.data() + end) &&
+             all_finite(one.dissipation.data() + begin, one.dissipation.data() + end) &&
+             all_finite(one.power.data() + begin, one.power.data() + end) &&
+             all_finite(one.shell_energy.data() + begin * shells,
+                        one.shell_energy.data() + end * shells) &&
+             all_finite(one.recorded.data() + 2 * begin * record,
+                        one.recorded.data() + 2 * end * record) &&
+             all_finite(one.final_states.data() + 2 * m * shells,
+                        one.final_states.data() + 2 * (m + 1) * shells);
   }
-  check(others, "other members complete despite one failure");
+  check(others, "other members complete with finite output despite one failure");
 
   std::vector<double> start(2 * shells);
   for (int j = 0; j < 2 * shells; ++j) start[j] = base[j] + perturbations[2 * 2 * shells + j];
   const auto single = integrate(model, start, 1e-5, steps);
   check(std::memcmp(single.data(), &one.final_states[2 * 2 * shells], single.size() * sizeof(double)) == 0,
         "ensemble member equals single integration bitwise");
+}
+
+void test_thread_joiner() {
+  std::vector<std::thread> pool;
+  {
+    sabra::detail::ThreadJoiner join_workers(pool);
+  }
+  check(pool.empty(), "thread joiner accepts an empty pool");
+
+  std::atomic<bool> completed{false};
+  {
+    sabra::detail::ThreadJoiner join_workers(pool);
+    pool.emplace_back([&] { completed.store(true); });
+  }
+  check(completed.load() && !pool.front().joinable(), "thread joiner waits on normal scope exit");
+  // Keep test cleanup safe if a broken guard leaves a joinable thread.
+  if (pool.front().joinable()) pool.front().join();
+  pool.clear();
+
+  completed.store(false);
+  struct LaunchFailure {};
+  bool caught = false;
+  try {
+    sabra::detail::ThreadJoiner join_workers(pool);
+    pool.emplace_back([&] { completed.store(true); });
+    // Simulate failure when launching a later worker, without exhausting resources.
+    throw LaunchFailure{};
+  } catch (const LaunchFailure&) {
+    caught = true;
+  }
+  check(caught && completed.load() && !pool.front().joinable(),
+        "thread joiner waits during exception unwinding and preserves the exception");
+  if (pool.front().joinable()) pool.front().join();
 }
 
 void test_invalid_arguments() {
@@ -265,6 +348,7 @@ int main() {
   test_rk4_fourth_order();
   test_fixed_and_generic_kernels_bitwise();
   test_ensemble();
+  test_thread_joiner();
   test_invalid_arguments();
   if (failures) {
     std::printf("%d native check(s) failed\n", failures);
